@@ -177,5 +177,5 @@ cython_debug/
 data/mimic2_dataset.json
 
 # Results
-# results/
-# processed_results/
+results/
+processed_results/
