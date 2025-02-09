@@ -54,15 +54,6 @@ def get_gpu_memory():
     except:
         return "GPU memory info not available"
 
-def get_model_size(model):
-    # Save model to a temporary file to get its size
-    temp_path = 'temp_model'
-    model.save(temp_path)
-    size_bytes = sum(os.path.getsize(os.path.join(temp_path, f)) for f in os.listdir(temp_path))
-    import shutil
-    shutil.rmtree(temp_path)
-    return size_bytes
-
 class BiLSTMClient(fl.client.NumPyClient):
     def __init__(self, client_id):
         self.client_id = client_id
@@ -101,11 +92,6 @@ class BiLSTMClient(fl.client.NumPyClient):
             learning_rate=LEARNING_RATE,
         )
         self.model.compile()
-        
-        # Get model information
-        self.trainable_params = np.sum([np.prod(v.get_shape()) for v in self.model.get_model().trainable_variables])
-        self.non_trainable_params = np.sum([np.prod(v.get_shape()) for v in self.model.get_model().non_trainable_variables])
-        self.model_size = get_model_size(self.model.get_model())
 
     def get_parameters(self, config):
         weights = self.model.get_model().get_weights()
@@ -222,11 +208,6 @@ def get_evaluate_fn():
     )
     model.compile()
     
-    # Get model information
-    trainable_params = np.sum([np.prod(v.get_shape()) for v in model.get_model().trainable_variables])
-    non_trainable_params = np.sum([np.prod(v.get_shape()) for v in model.get_model().non_trainable_variables])
-    model_size = get_model_size(model.get_model())
-    
     # Store metrics across rounds
     metrics_history = []
     process = psutil.Process()
@@ -256,12 +237,7 @@ def get_evaluate_fn():
             "memory_usage_formatted": humanize.naturalsize(current_memory),
             "memory_increase_bytes": memory_increase,
             "memory_increase_formatted": humanize.naturalsize(memory_increase),
-            "gpu_memory_info": str(get_gpu_memory()),
-            "model_size_bytes": model_size,
-            "model_size_formatted": humanize.naturalsize(model_size),
-            "trainable_parameters": int(trainable_params),
-            "non_trainable_parameters": int(non_trainable_params),
-            "total_parameters": int(trainable_params + non_trainable_params)
+            "gpu_memory_info": str(get_gpu_memory())
         }
         metrics_history.append(metrics_dict)
         
