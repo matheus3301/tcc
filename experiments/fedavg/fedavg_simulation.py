@@ -16,6 +16,9 @@ from tensorflow.keras.regularizers import L1L2
 from helpers.load_data import load_data
 import json
 from helpers.numpy_serializer import NumpyEncoder
+import psutil
+import time
+import humanize
 
 # Create base results directory if it doesn't exist
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedavg")
@@ -30,10 +33,10 @@ os.makedirs(RUN_DIR, exist_ok=True)
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 1  # Local epochs per round
+EPOCHS = 3  # Local epochs per round
 N_NEURONS = 128
 NUM_ROUNDS = 250
-NUM_CLIENTS = 3
+NUM_CLIENTS = 5
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -42,20 +45,47 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     examples = [num_examples for num_examples, _ in metrics]
     return {"rmse": sum(accuracies) / sum(examples)}
 
+def get_gpu_memory():
+    try:
+        gpus = tf.config.list_physical_devices('GPU')
+        if not gpus:
+            return "No GPU available"
+        return tf.config.experimental.get_memory_info('GPU:0')
+    except:
+        return "GPU memory info not available"
+
+def get_model_size(model):
+    # Save model to a temporary file to get its size
+    temp_path = 'temp_model'
+    model.save(temp_path)
+    size_bytes = sum(os.path.getsize(os.path.join(temp_path, f)) for f in os.listdir(temp_path))
+    import shutil
+    shutil.rmtree(temp_path)
+    return size_bytes
+
 class BiLSTMClient(fl.client.NumPyClient):
     def __init__(self, client_id):
         self.client_id = client_id
         
-        # Create client-specific sample directory
-        self.client_sample_dir = os.path.join(RUN_DIR, f'client_{self.client_id}', 'sample')
+        # Create client-specific directories
+        self.client_dir = os.path.join(RUN_DIR, f'client_{self.client_id}')
+        self.client_sample_dir = os.path.join(self.client_dir, 'sample')
         os.makedirs(self.client_sample_dir, exist_ok=True)
         
+        # Initialize performance tracking
+        self.process = psutil.Process()
+        self.initial_memory = self.process.memory_info().rss
+        self.metrics_history = []
+        self.training_times = []
+        
         # Load data for this client
+        data_load_start = time.time()
         (self.x_train, self.y_train), (self.x_val, self.y_val), (self.x_test, self.y_test) = load_data(
             client_id=self.client_id,
             path=DATA_PATH,
             segment_len=None
         )
+        self.data_load_time = time.time() - data_load_start
         
         # Reshape input data
         self.x_train = self.x_train.reshape(self.x_train.shape[0], self.x_train.shape[1], 1)
@@ -71,6 +101,11 @@ class BiLSTMClient(fl.client.NumPyClient):
             learning_rate=LEARNING_RATE,
         )
         self.model.compile()
+        
+        # Get model information
+        self.trainable_params = np.sum([np.prod(v.get_shape()) for v in self.model.get_model().trainable_variables])
+        self.non_trainable_params = np.sum([np.prod(v.get_shape()) for v in self.model.get_model().non_trainable_variables])
+        self.model_size = get_model_size(self.model.get_model())
 
     def get_parameters(self, config):
         weights = self.model.get_model().get_weights()
@@ -82,6 +117,10 @@ class BiLSTMClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         self.set_parameters(parameters)
         
+        # Track training time and memory
+        start_time = time.time()
+        start_memory = self.process.memory_info().rss
+        
         history = self.model.get_model().fit(
             self.x_train,
             self.y_train,
@@ -91,8 +130,37 @@ class BiLSTMClient(fl.client.NumPyClient):
             verbose=0
         )
         
+        # Calculate metrics
+        training_time = time.time() - start_time
+        current_memory = self.process.memory_info().rss
+        memory_increase = current_memory - start_memory
+        
         # Get current round from config
         current_round = config.get("current_round", 0)
+        
+        # Store metrics for this round
+        round_metrics = {
+            "round": current_round,
+            "training_time_seconds": training_time,
+            "memory_usage_bytes": current_memory,
+            "memory_usage_formatted": humanize.naturalsize(current_memory),
+            "memory_increase_bytes": memory_increase,
+            "memory_increase_formatted": humanize.naturalsize(memory_increase),
+            "gpu_memory_info": str(get_gpu_memory()),
+            "train_loss": float(history.history['loss'][-1]),
+            "val_loss": float(history.history['val_loss'][-1]),
+            "train_rmse": float(history.history['rmse'][-1]),
+            "val_rmse": float(history.history['val_rmse'][-1])
+        }
+        
+        self.metrics_history.append(round_metrics)
+        self.training_times.append(training_time)
+        
+        # Save metrics to CSV
+        pd.DataFrame(self.metrics_history).to_csv(
+            os.path.join(self.client_dir, 'metrics_history.csv'),
+            index=False
+        )
         
         # Every 10 rounds, save sample predictions
         if current_round % 10 == 0 or current_round == NUM_ROUNDS:
@@ -111,7 +179,7 @@ class BiLSTMClient(fl.client.NumPyClient):
             with open(os.path.join(self.client_sample_dir, f'output_round_{current_round}.json'), 'w') as f:
                 json.dump(generated_output.tolist(), f, cls=NumpyEncoder)
         
-        return self.get_parameters(config), len(self.x_train), {}
+        return self.get_parameters(config), len(self.x_train), round_metrics
 
     def evaluate(self, parameters, config):
         self.set_parameters(parameters)
@@ -133,11 +201,13 @@ def get_evaluate_fn():
     """Returns an evaluation function for server-side evaluation."""
     
     # Load test data
+    data_load_start = time.time()
     _, _, (x_test, y_test) = load_data(
         client_id=0,  # Use first client's test data for server-side evaluation
         path=DATA_PATH,
         segment_len=None
     )
+    data_load_time = time.time() - data_load_start
     
     # Reshape test data
     x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], 1)
@@ -152,25 +222,52 @@ def get_evaluate_fn():
     )
     model.compile()
     
+    # Get model information
+    trainable_params = np.sum([np.prod(v.get_shape()) for v in model.get_model().trainable_variables])
+    non_trainable_params = np.sum([np.prod(v.get_shape()) for v in model.get_model().non_trainable_variables])
+    model_size = get_model_size(model.get_model())
+    
     # Store metrics across rounds
     metrics_history = []
+    process = psutil.Process()
+    initial_memory = process.memory_info().rss
     
     # The `evaluate` function will be called after every round
     def evaluate(server_round: int, parameters: fl.common.NDArrays, config: Dict[str, fl.common.Scalar]):
+        # Track evaluation time and memory
+        start_time = time.time()
+        start_memory = process.memory_info().rss
+        
         model.get_model().set_weights(parameters)  # Update model with the latest parameters
         loss, rmse = model.get_model().evaluate(x_test, y_test, batch_size=BATCH_SIZE, verbose=0)
+        
+        # Calculate metrics
+        eval_time = time.time() - start_time
+        current_memory = process.memory_info().rss
+        memory_increase = current_memory - start_memory
         
         # Store metrics
         metrics_dict = {
             "round": server_round,
             "loss": float(loss),
-            "rmse": float(rmse)
+            "rmse": float(rmse),
+            "evaluation_time_seconds": eval_time,
+            "memory_usage_bytes": current_memory,
+            "memory_usage_formatted": humanize.naturalsize(current_memory),
+            "memory_increase_bytes": memory_increase,
+            "memory_increase_formatted": humanize.naturalsize(memory_increase),
+            "gpu_memory_info": str(get_gpu_memory()),
+            "model_size_bytes": model_size,
+            "model_size_formatted": humanize.naturalsize(model_size),
+            "trainable_parameters": int(trainable_params),
+            "non_trainable_parameters": int(non_trainable_params),
+            "total_parameters": int(trainable_params + non_trainable_params)
         }
         metrics_history.append(metrics_dict)
         
         # Save metrics history to CSV
         pd.DataFrame(metrics_history).to_csv(
-            os.path.join(RUN_DIR, 'history.csv'),
+            os.path.join(RUN_DIR, 'server_metrics.csv'),
             index=False
         )
         
