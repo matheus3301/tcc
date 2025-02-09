@@ -70,8 +70,8 @@ def main():
 
     pd.DataFrame(results, index=[0]).to_csv(os.path.join(results_dir, 'results.csv'), index=False)
 
-    input_data = x_test[0:5]
-    expected_output = y_test[0:5]
+    input_data = x_test
+    expected_output = y_test
 
     # Use the model to generate the output
     generated_output = model.get_model().predict(input_data, batch_size=input_data.shape[0])
