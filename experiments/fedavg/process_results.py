@@ -12,6 +12,66 @@ def extract_round_number(filename):
     match = re.search(r'round_(\d+)', filename)
     return int(match.group(1)) if match else -1
 
+def plot_final_result(signals_dict, output_path):
+    """Plot only the final result using the highest round number.
+    
+    Args:
+        signals_dict: Dictionary with signal names as keys and signal data as values
+        output_path: Path to save the plot
+    """
+    # Convert all signals to flat arrays
+    processed_signals = {
+        name: np.array(signal).flatten() 
+        for name, signal in signals_dict.items()
+    }
+    
+    # Find the highest round number
+    rounds = set()
+    for name in processed_signals.keys():
+        round_num = extract_round_number(name)
+        if round_num > 0:
+            rounds.add(round_num)
+    max_round = max(rounds)
+    
+    # Create figure
+    plt.figure(figsize=(15, 8))
+    
+    # Get signals for final result
+    input_signal = processed_signals.get(f'input_round_{max_round}.json')
+    expected_signal = processed_signals.get(f'expected_output_round_{max_round}.json')
+    predicted_signal = processed_signals.get(f'output_round_{max_round}.json')
+    
+    # Create time axis
+    signal_length = len(input_signal)
+    time = np.arange(signal_length)
+    
+    # Plot PPG input signal
+    plt.subplot(2, 1, 1)
+    plt.plot(time, input_signal, linewidth=1.5, color='#2ecc71', 
+            label='PPG (Entrada)', linestyle='-')
+    plt.title('Sinal PPG de Entrada', fontsize=12, pad=10)
+    plt.xlabel('Amostras', fontsize=10)
+    plt.ylabel('Amplitude', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=9)
+    
+    # Plot ECG signals comparison
+    plt.subplot(2, 1, 2)
+    plt.plot(time, expected_signal, linewidth=1.5, color='#3498db', 
+            label='ECG Esperado', linestyle='-')
+    plt.plot(time, predicted_signal, linewidth=1.5, color='#e74c3c', 
+            label='ECG Predito', linestyle='-')
+    plt.title(f'Comparação ECG - Round {max_round}', fontsize=12, pad=10)
+    plt.xlabel('Amostras', fontsize=10)
+    plt.ylabel('Amplitude', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=9)
+    
+    # Save plot
+    plt.tight_layout()
+    plt.savefig(output_path, format='pdf', bbox_inches='tight', dpi=300)
+    plt.close()
+
 def plot_signals(signals_dict, output_path):
     """Plot all signals from the sample directory.
     
@@ -88,7 +148,10 @@ def process_client_data(client_dir: Path, output_dir: Path):
             
         # Plot signals if any were found
         if signals:
+            # Plot all rounds progression
             plot_signals(signals, client_output_dir / 'sample_signals.pdf')
+            # Plot final result
+            plot_final_result(signals, client_output_dir / 'final_result.pdf')
 
 def process_experiment(experiment_path: Path, output_path: Path):
     """Process a single experiment folder and generate plots."""
