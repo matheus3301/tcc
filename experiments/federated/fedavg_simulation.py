@@ -1,3 +1,9 @@
+import sys
+import os
+# import ray
+# ray.init(address='auto', runtime_env={"working_dir": "./"})
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 import flwr as fl
 from typing import List, Tuple, Dict, Optional
 from flwr.common import Metrics
@@ -9,6 +15,10 @@ from models.bilstm import BiLSTM
 from tensorflow.keras.regularizers import L1L2
 from helpers.load_data import load_data
 
+# Create results directory if it doesn't exist
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "federated")
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
@@ -16,7 +26,7 @@ EPOCHS = 1  # Local epochs per round
 N_NEURONS = 128
 NUM_ROUNDS = 50
 NUM_CLIENTS = 2
-DATA_PATH = "../data/mimic2_dataset.json"
+DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     """Aggregates metrics weighted by number of samples."""
@@ -51,11 +61,11 @@ class BiLSTMClient(fl.client.NumPyClient):
         self.model.compile()
 
     def get_parameters(self, config):
-        return [np.array(layer.get_weights()) for layer in self.model.get_model().layers]
+        weights = self.model.get_model().get_weights()
+        return [np.array(w) for w in weights]
 
     def set_parameters(self, parameters):
-        for layer, weights in zip(self.model.get_model().layers, parameters):
-            layer.set_weights(weights)
+        self.model.get_model().set_weights(parameters)
 
     def fit(self, parameters, config):
         self.set_parameters(parameters)
@@ -125,10 +135,10 @@ def get_evaluate_fn():
         
         # Save metrics to CSV
         pd.DataFrame([metrics_dict]).to_csv(
-            f'results/federated/simulation_metrics_{timestamp}_round_{server_round}.csv',
+            os.path.join(RESULTS_DIR, f'simulation_metrics_{timestamp}_round_{server_round}.csv'),
             index=False,
             mode='a',
-            header=not pd.io.common.file_exists(f'results/federated/simulation_metrics_{timestamp}_round_{server_round}.csv')
+            header=not pd.io.common.file_exists(os.path.join(RESULTS_DIR, f'simulation_metrics_{timestamp}_round_{server_round}.csv'))
         )
         
         return loss, {"rmse": rmse}

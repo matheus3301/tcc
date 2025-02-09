@@ -20,11 +20,16 @@ BATCH_SIZE=64
 LEARNING_RATE=0.001
 EPOCHS=250
 N_NEURONS=128
-# Construct absolute path to data file relative to this script's location
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def main():
     logger.info("Starting the experiment")
+
+    # Create timestamped directory for results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = os.path.join('results', 'centralized', timestamp)
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(os.path.join(results_dir, 'sample'), exist_ok=True)
 
     # Load data
     (x_train, y_train), (x_val, y_val), (x_test, y_test) = load_all_data(DATA_PATH)
@@ -50,8 +55,7 @@ def main():
         )
 
     # Save the model history
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pd.DataFrame(history.history).to_csv(f'results/centralized/history_{timestamp}.csv', index=False)
+    pd.DataFrame(history.history).to_csv(os.path.join(results_dir, 'history.csv'), index=False)
 
     train_result = model.get_model().predict(x_train, batch_size=1)
 
@@ -64,10 +68,10 @@ def main():
         "fit_loss": float(loss),
     }
 
-    pd.DataFrame(results, index=[0]).to_csv(f'results/centralized/results_{timestamp}.csv', index=False)
+    pd.DataFrame(results, index=[0]).to_csv(os.path.join(results_dir, 'results.csv'), index=False)
 
-    input_data = x_test[0:1]
-    expected_output = y_test[0:1]
+    input_data = x_test[0:5]
+    expected_output = y_test[0:5]
 
     # Use the model to generate the output
     generated_output = model.get_model().predict(input_data, batch_size=input_data.shape[0])
@@ -78,13 +82,13 @@ def main():
     print(f"generated_output: {generated_output.shape}")
 
     # Save the input, expected output, and generated output in three json files
-    with open(f'results/centralized/sample/input_{timestamp}.json', 'w') as f:
+    with open(os.path.join(results_dir, 'sample', 'input.json'), 'w') as f:
         json.dump(input_data.tolist(), f, cls=NumpyEncoder)
 
-    with open(f'results/centralized/sample/expected_output_{timestamp}.json', 'w') as f:
+    with open(os.path.join(results_dir, 'sample', 'expected_output.json'), 'w') as f:
         json.dump(expected_output.tolist(), f, cls=NumpyEncoder)
 
-    with open(f'results/centralized/sample/output_{timestamp}.json', 'w') as f:
+    with open(os.path.join(results_dir, 'sample', 'output.json'), 'w') as f:
         json.dump(generated_output.tolist(), f, cls=NumpyEncoder)
 
 if __name__ == "__main__":
