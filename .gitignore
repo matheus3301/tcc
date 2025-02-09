@@ -175,3 +175,7 @@ cython_debug/
 
 # Large files
 data/mimic2_dataset.json
+
+# Results
+# results/
+# processed_results/
