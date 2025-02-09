@@ -6,7 +6,7 @@ import logging
 from models.bilstm import BiLSTM
 from tensorflow.keras.regularizers import L1L2
 from helpers.load_data import load_all_data
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from helpers.numpy_serializer import NumpyEncoder
 import json
@@ -134,7 +134,6 @@ def main():
         "fit_rmse": float(rmse),
         "fit_loss": float(loss),
         "training_time_seconds": total_training_time,
-        "training_time_formatted": str(datetime.timedelta(seconds=total_training_time)),
         "data_loading_time_seconds": data_load_time,
         "peak_memory_bytes": peak_memory,
         "peak_memory_formatted": humanize.naturalsize(peak_memory),
