@@ -14,18 +14,26 @@ import tensorflow as tf
 from models.bilstm import BiLSTM
 from tensorflow.keras.regularizers import L1L2
 from helpers.load_data import load_data
+import json
+from helpers.numpy_serializer import NumpyEncoder
 
-# Create results directory if it doesn't exist
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "federated")
+# Create base results directory if it doesn't exist
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedavg")
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+# Create timestamped directory for this run
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+RUN_DIR = os.path.join(RESULTS_DIR, TIMESTAMP)
+os.makedirs(RUN_DIR, exist_ok=True)
+# os.makedirs(os.path.join(RUN_DIR, 'sample'), exist_ok=True)
 
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
 EPOCHS = 1  # Local epochs per round
 N_NEURONS = 128
-NUM_ROUNDS = 50
-NUM_CLIENTS = 2
+NUM_ROUNDS = 250
+NUM_CLIENTS = 3
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -37,6 +45,10 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
 class BiLSTMClient(fl.client.NumPyClient):
     def __init__(self, client_id):
         self.client_id = client_id
+        
+        # Create client-specific sample directory
+        self.client_sample_dir = os.path.join(RUN_DIR, f'client_{self.client_id}', 'sample')
+        os.makedirs(self.client_sample_dir, exist_ok=True)
         
         # Load data for this client
         (self.x_train, self.y_train), (self.x_val, self.y_val), (self.x_test, self.y_test) = load_data(
@@ -79,6 +91,26 @@ class BiLSTMClient(fl.client.NumPyClient):
             verbose=0
         )
         
+        # Get current round from config
+        current_round = config.get("current_round", 0)
+        
+        # Every 10 rounds, save sample predictions
+        if current_round % 10 == 0 or current_round == NUM_ROUNDS:
+            # Use test data for predictions
+            input_data = self.x_test[0:5]
+            expected_output = self.y_test[0:5]
+            generated_output = self.model.get_model().predict(input_data, batch_size=input_data.shape[0])
+            
+            # Save sample predictions
+            with open(os.path.join(self.client_sample_dir, f'input_round_{current_round}.json'), 'w') as f:
+                json.dump(input_data.tolist(), f, cls=NumpyEncoder)
+            
+            with open(os.path.join(self.client_sample_dir, f'expected_output_round_{current_round}.json'), 'w') as f:
+                json.dump(expected_output.tolist(), f, cls=NumpyEncoder)
+            
+            with open(os.path.join(self.client_sample_dir, f'output_round_{current_round}.json'), 'w') as f:
+                json.dump(generated_output.tolist(), f, cls=NumpyEncoder)
+        
         return self.get_parameters(config), len(self.x_train), {}
 
     def evaluate(self, parameters, config):
@@ -120,25 +152,26 @@ def get_evaluate_fn():
     )
     model.compile()
     
+    # Store metrics across rounds
+    metrics_history = []
+    
     # The `evaluate` function will be called after every round
     def evaluate(server_round: int, parameters: fl.common.NDArrays, config: Dict[str, fl.common.Scalar]):
         model.get_model().set_weights(parameters)  # Update model with the latest parameters
         loss, rmse = model.get_model().evaluate(x_test, y_test, batch_size=BATCH_SIZE, verbose=0)
         
-        # Log metrics
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Store metrics
         metrics_dict = {
             "round": server_round,
-            "loss": loss,
-            "rmse": rmse
+            "loss": float(loss),
+            "rmse": float(rmse)
         }
+        metrics_history.append(metrics_dict)
         
-        # Save metrics to CSV
-        pd.DataFrame([metrics_dict]).to_csv(
-            os.path.join(RESULTS_DIR, f'simulation_metrics_{timestamp}_round_{server_round}.csv'),
-            index=False,
-            mode='a',
-            header=not pd.io.common.file_exists(os.path.join(RESULTS_DIR, f'simulation_metrics_{timestamp}_round_{server_round}.csv'))
+        # Save metrics history to CSV
+        pd.DataFrame(metrics_history).to_csv(
+            os.path.join(RUN_DIR, 'history.csv'),
+            index=False
         )
         
         return loss, {"rmse": rmse}
@@ -146,7 +179,7 @@ def get_evaluate_fn():
     return evaluate
 
 def main():
-    # Create strategy
+    # Create strategy with custom configuration
     strategy = fl.server.strategy.FedAvg(
         fraction_fit=1.0,
         fraction_evaluate=1.0,
@@ -154,7 +187,8 @@ def main():
         min_evaluate_clients=NUM_CLIENTS,
         min_available_clients=NUM_CLIENTS,
         evaluate_metrics_aggregation_fn=weighted_average,
-        evaluate_fn=get_evaluate_fn(),  # Pass the evaluation function
+        evaluate_fn=get_evaluate_fn(),
+        on_fit_config_fn=lambda server_round: {"current_round": server_round}  # Pass current round to clients
     )
 
     # Start simulation

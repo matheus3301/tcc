@@ -28,6 +28,7 @@ def load_data(client_id, path, segment_len, *args, **kwargs):
 
     # Download and partition dataset
     data = load_datafile(path)
+    logger.info("[LOAD DATA]Available client data: %d", len(data))
     client_id = int(client_id)
     assert client_id < len(data) and client_id >= 0, "Invalid Client ID"
     x_train, y_train = data[client_id]['train']['input_series'], data[client_id]['train']['output_series']
