@@ -36,7 +36,7 @@ INTERPOLATION_WEIGHT = 0.6
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 50  # Local epochs per round
+EPOCHS = 10  # Local epochs per round
 N_NEURONS = 128
 NUM_ROUNDS = 50
 NUM_CLIENTS = 10
