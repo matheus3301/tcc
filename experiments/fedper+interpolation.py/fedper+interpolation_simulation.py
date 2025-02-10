@@ -43,9 +43,8 @@ INTERPOLATION_WEIGHT = 0.8
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     """Aggregates metrics weighted by number of samples."""
     accuracies = [num_examples * m["rmse"] for num_examples, m in metrics]
-    loss = [num_examples * m["loss"] for num_examples, m in metrics]
     examples = [num_examples for num_examples, _ in metrics]
-    return {"rmse": sum(accuracies) / sum(examples), "loss": sum(loss) / sum(examples)}
+    return {"rmse": sum(accuracies) / sum(examples)}
 
 def get_gpu_memory():
     try:
