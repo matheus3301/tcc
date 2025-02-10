@@ -5,6 +5,7 @@ import seaborn as sns
 import json
 import numpy as np
 from pathlib import Path
+from scipy.stats import pearsonr
 
 def plot_signals(signals_dict, output_path):
     """Plot all signals from the sample directory.
@@ -15,7 +16,7 @@ def plot_signals(signals_dict, output_path):
     """
     # Convert all signals to flat arrays
     processed_signals = {
-        name: np.array(signal).flatten() 
+        name: np.array(signal)[:5].flatten() 
         for name, signal in signals_dict.items()
     }
     
@@ -92,6 +93,39 @@ def plot_signals(signals_dict, output_path):
     plt.savefig(output_path, format='pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
+def calculate_signal_metrics(expected_signal, predicted_signal, n_samples):
+    """Calculate metrics between expected and predicted signals.
+    
+    Args:
+        expected_signal: Array containing the expected ECG signals
+        predicted_signal: Array containing the predicted ECG signals
+        n_samples: Number of individual signals in the arrays
+        
+    Returns:
+        Dictionary containing correlation metrics for each signal pair
+    """
+    # Calculate length of each individual signal
+    total_length = len(expected_signal)
+    sample_length = total_length // n_samples
+    
+    # Split signals into individual samples
+    expected_samples = [expected_signal[i*sample_length:(i+1)*sample_length] for i in range(n_samples)]
+    predicted_samples = [predicted_signal[i*sample_length:(i+1)*sample_length] for i in range(n_samples)]
+    
+    # Calculate correlation for each pair
+    pair_correlations = []
+    for i in range(n_samples):
+        corr, _ = pearsonr(expected_samples[i], predicted_samples[i])
+        pair_correlations.append(corr)
+    
+    metrics = {
+        'individual_correlations': pair_correlations,
+        'mean_correlation': np.mean(pair_correlations),
+        'std_correlation': np.std(pair_correlations)
+    }
+    
+    return metrics
+
 def process_experiment(experiment_path: Path, output_path: Path):
     """Process a single experiment folder and generate plots."""
     # Read the history file
@@ -109,9 +143,30 @@ def process_experiment(experiment_path: Path, output_path: Path):
         for json_file in sorted(sample_dir.glob('*.json')):
             with open(json_file, 'r') as f:
                 signals[json_file.name] = json.load(f)
-            
-        # Plot signals if any were found
+        
+        # Calculate metrics if signals exist
         if signals:
+            expected_ecg = np.array(signals.get('expected_output.json')).flatten()
+            metrics = {}
+            
+            for name, signal in signals.items():
+                if name not in ['input.json', 'expected_output.json']:
+                    predicted_signal = np.array(signal).flatten()
+                    metrics[name] = calculate_signal_metrics(expected_ecg, predicted_signal, n_samples=10)
+                    
+                    # Print metrics for this prediction
+                    print(f"\nMetrics for {name}:")
+                    for i, corr in enumerate(metrics[name]['individual_correlations']):
+                        print(f"ECG pair {i+1}: Correlation = {corr:.4f}")
+                    print(f"Mean correlation: {metrics[name]['mean_correlation']:.4f}")
+                    print(f"Std correlation: {metrics[name]['std_correlation']:.4f}")
+            
+            # Save metrics to JSON
+            metrics_path = output_dir / 'signal_metrics.json'
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics, f, indent=4)
+            
+            # Plot signals
             plot_signals(signals, output_dir / 'sample_signals.pdf')
     
     # Set style for better looking plots
