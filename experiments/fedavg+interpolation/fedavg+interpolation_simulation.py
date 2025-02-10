@@ -32,7 +32,7 @@ os.makedirs(RUN_DIR, exist_ok=True)
 
 # Values closer to 1.0 will give more weight to the local model
 # Values closer to 0.0 will give more weight to the federated model
-INTERPOLATION_WEIGHT = 0.6
+INTERPOLATION_WEIGHT = 0.8
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
@@ -185,10 +185,11 @@ class BiLSTMClient(fl.client.NumPyClient):
         self.training_times.append(training_time)
         
         # Save metrics to CSV
-        pd.DataFrame(self.metrics_history).to_csv(
-            os.path.join(self.client_dir, 'metrics_history.csv'),
-            index=False
-        )
+        metrics_file = os.path.join(self.client_dir, 'metrics_history.csv')
+        if os.path.exists(metrics_file):
+            pd.DataFrame([self.metrics_history[-1]]).to_csv(metrics_file, mode='a', header=False, index=False)
+        else:
+            pd.DataFrame(self.metrics_history).to_csv(metrics_file, index=False)
         
         # Every 10 rounds, save sample predictions
         if current_round % 10 == 0 or current_round == NUM_ROUNDS:
