@@ -16,6 +16,9 @@ from tensorflow.keras.regularizers import L1L2
 from helpers.load_data import load_data
 import json
 from helpers.numpy_serializer import NumpyEncoder
+import psutil
+import time
+import humanize
 
 # Create base results directory if it doesn't exist
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedavg+interpolation")
@@ -33,10 +36,10 @@ INTERPOLATION_WEIGHT = 0.6
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 1  # Local epochs per round
+EPOCHS = 50  # Local epochs per round
 N_NEURONS = 128
-NUM_ROUNDS = 100
-NUM_CLIENTS = 2
+NUM_ROUNDS = 50
+NUM_CLIENTS = 10
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -45,21 +48,39 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     examples = [num_examples for num_examples, _ in metrics]
     return {"rmse": sum(accuracies) / sum(examples)}
 
+def get_gpu_memory():
+    try:
+        gpus = tf.config.list_physical_devices('GPU')
+        if not gpus:
+            return "No GPU available"
+        return tf.config.experimental.get_memory_info('GPU:0')
+    except:
+        return "GPU memory info not available"
+
 class BiLSTMClient(fl.client.NumPyClient):
     def __init__(self, client_id):
         self.client_id = client_id
-        self.interpolation_weight = INTERPOLATION_WEIGHT  # Weight for interpolation between local and federated models
+        self.interpolation_weight = INTERPOLATION_WEIGHT
         
-        # Create client-specific sample directory
-        self.client_sample_dir = os.path.join(RUN_DIR, f'client_{self.client_id}', 'sample')
+        # Create client-specific directories
+        self.client_dir = os.path.join(RUN_DIR, f'client_{self.client_id}')
+        self.client_sample_dir = os.path.join(self.client_dir, 'sample')
         os.makedirs(self.client_sample_dir, exist_ok=True)
         
+        # Initialize performance tracking
+        self.process = psutil.Process()
+        self.initial_memory = self.process.memory_info().rss
+        self.metrics_history = []
+        self.training_times = []
+        
         # Load data for this client
+        data_load_start = time.time()
         (self.x_train, self.y_train), (self.x_val, self.y_val), (self.x_test, self.y_test) = load_data(
             client_id=self.client_id,
             path=DATA_PATH,
             segment_len=None
         )
+        self.data_load_time = time.time() - data_load_start
         
         # Reshape input data
         self.x_train = self.x_train.reshape(self.x_train.shape[0], self.x_train.shape[1], 1)
@@ -69,7 +90,7 @@ class BiLSTMClient(fl.client.NumPyClient):
         # Create regularizer
         regularizer = L1L2(l1=0.0001, l2=0.0001)
         
-        # Create federated model (participates in federation)
+        # Create federated model
         self.federated_model = BiLSTM(
             input_shape=(self.x_train.shape[1], 1),
             n_neurons=N_NEURONS,
@@ -78,7 +99,7 @@ class BiLSTMClient(fl.client.NumPyClient):
         )
         self.federated_model.compile()
         
-        # Create local model (trains only on local data)
+        # Create local model
         self.local_model = BiLSTM(
             input_shape=(self.x_train.shape[1], 1),
             n_neurons=N_NEURONS,
@@ -109,8 +130,12 @@ class BiLSTMClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         self.set_parameters(parameters)
         
+        # Track training time and memory
+        start_time = time.time()
+        start_memory = self.process.memory_info().rss
+        
         # Train federated model
-        self.federated_model.get_model().fit(
+        fed_history = self.federated_model.get_model().fit(
             self.x_train,
             self.y_train,
             epochs=EPOCHS,
@@ -120,7 +145,7 @@ class BiLSTMClient(fl.client.NumPyClient):
         )
         
         # Train local model independently
-        self.local_model.get_model().fit(
+        local_history = self.local_model.get_model().fit(
             self.x_train,
             self.y_train,
             epochs=EPOCHS,
@@ -129,8 +154,41 @@ class BiLSTMClient(fl.client.NumPyClient):
             verbose=0
         )
         
+        # Calculate metrics
+        training_time = time.time() - start_time
+        current_memory = self.process.memory_info().rss
+        memory_increase = current_memory - start_memory
+        
         # Get current round from config
         current_round = config.get("current_round", 0)
+        
+        # Store metrics for this round
+        round_metrics = {
+            "round": current_round,
+            "training_time_seconds": training_time,
+            "memory_usage_bytes": current_memory,
+            "memory_usage_formatted": humanize.naturalsize(current_memory),
+            "memory_increase_bytes": memory_increase,
+            "memory_increase_formatted": humanize.naturalsize(memory_increase),
+            "gpu_memory_info": str(get_gpu_memory()),
+            "fed_train_loss": float(fed_history.history['loss'][-1]),
+            "fed_val_loss": float(fed_history.history['val_loss'][-1]),
+            "fed_train_rmse": float(fed_history.history['rmse'][-1]),
+            "fed_val_rmse": float(fed_history.history['val_rmse'][-1]),
+            "local_train_loss": float(local_history.history['loss'][-1]),
+            "local_val_loss": float(local_history.history['val_loss'][-1]),
+            "local_train_rmse": float(local_history.history['rmse'][-1]),
+            "local_val_rmse": float(local_history.history['val_rmse'][-1])
+        }
+        
+        self.metrics_history.append(round_metrics)
+        self.training_times.append(training_time)
+        
+        # Save metrics to CSV
+        pd.DataFrame(self.metrics_history).to_csv(
+            os.path.join(self.client_dir, 'metrics_history.csv'),
+            index=False
+        )
         
         # Every 10 rounds, save sample predictions
         if current_round % 10 == 0 or current_round == NUM_ROUNDS:
@@ -149,7 +207,7 @@ class BiLSTMClient(fl.client.NumPyClient):
             with open(os.path.join(self.client_sample_dir, f'output_round_{current_round}.json'), 'w') as f:
                 json.dump(generated_output.tolist(), f, cls=NumpyEncoder)
         
-        return self.get_parameters(config), len(self.x_train), {}
+        return self.get_parameters(config), len(self.x_train), round_metrics
 
     def evaluate(self, parameters, config):
         self.set_parameters(parameters)
@@ -182,11 +240,13 @@ def get_evaluate_fn():
     """Returns an evaluation function for server-side evaluation."""
     
     # Load test data
+    data_load_start = time.time()
     _, _, (x_test, y_test) = load_data(
         client_id=0,  # Use first client's test data for server-side evaluation
         path=DATA_PATH,
         segment_len=None
     )
+    data_load_time = time.time() - data_load_start
     
     # Reshape test data
     x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], 1)
@@ -203,23 +263,40 @@ def get_evaluate_fn():
     
     # Store metrics across rounds
     metrics_history = []
+    process = psutil.Process()
+    initial_memory = process.memory_info().rss
     
     # The `evaluate` function will be called after every round
     def evaluate(server_round: int, parameters: fl.common.NDArrays, config: Dict[str, fl.common.Scalar]):
+        # Track evaluation time and memory
+        start_time = time.time()
+        start_memory = process.memory_info().rss
+        
         model.get_model().set_weights(parameters)  # Update model with the latest parameters
         loss, rmse = model.get_model().evaluate(x_test, y_test, batch_size=BATCH_SIZE, verbose=0)
+        
+        # Calculate metrics
+        eval_time = time.time() - start_time
+        current_memory = process.memory_info().rss
+        memory_increase = current_memory - start_memory
         
         # Store metrics
         metrics_dict = {
             "round": server_round,
             "loss": float(loss),
-            "rmse": float(rmse)
+            "rmse": float(rmse),
+            "evaluation_time_seconds": eval_time,
+            "memory_usage_bytes": current_memory,
+            "memory_usage_formatted": humanize.naturalsize(current_memory),
+            "memory_increase_bytes": memory_increase,
+            "memory_increase_formatted": humanize.naturalsize(memory_increase),
+            "gpu_memory_info": str(get_gpu_memory())
         }
         metrics_history.append(metrics_dict)
         
         # Save metrics history to CSV
         pd.DataFrame(metrics_history).to_csv(
-            os.path.join(RUN_DIR, 'history.csv'),
+            os.path.join(RUN_DIR, 'server_metrics.csv'),
             index=False
         )
         

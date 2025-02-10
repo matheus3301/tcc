@@ -33,10 +33,10 @@ os.makedirs(RUN_DIR, exist_ok=True)
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 3  # Local epochs per round
+EPOCHS = 10  # Local epochs per round
 N_NEURONS = 128
-NUM_ROUNDS = 250
-NUM_CLIENTS = 5
+NUM_ROUNDS = 50
+NUM_CLIENTS = 10
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -151,8 +151,8 @@ class BiLSTMClient(fl.client.NumPyClient):
         # Every 10 rounds, save sample predictions
         if current_round % 10 == 0 or current_round == NUM_ROUNDS:
             # Use test data for predictions
-            input_data = self.x_test[0:5]
-            expected_output = self.y_test[0:5]
+            input_data = self.x_test
+            expected_output = self.y_test
             generated_output = self.model.get_model().predict(input_data, batch_size=input_data.shape[0])
             
             # Save sample predictions
