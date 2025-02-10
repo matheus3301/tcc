@@ -145,7 +145,9 @@ class BiLSTMClient(fl.client.NumPyClient):
         # Save metrics to CSV
         pd.DataFrame(self.metrics_history).to_csv(
             os.path.join(self.client_dir, 'metrics_history.csv'),
-            index=False
+            index=False,
+            mode='a',
+            header=not os.path.exists(os.path.join(self.client_dir, 'metrics_history.csv'))
         )
         
         # Every 10 rounds, save sample predictions

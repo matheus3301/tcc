@@ -253,7 +253,7 @@ def process_experiment(experiment_path: Path, output_path: Path):
     
     # Plot loss
     plt.subplot(1, 3, 1)
-    plt.plot(history_df['loss'], label='Perda Global', linewidth=2)
+    plt.plot(history_df['loss'], label='Perda Global', linewidth=2, color='#2ecc71')  # Green
     plt.title('Função de Perda', fontsize=12, pad=10)
     plt.xlabel('Round', fontsize=10)
     plt.ylabel('Perda (MSE)', fontsize=10)
@@ -262,7 +262,7 @@ def process_experiment(experiment_path: Path, output_path: Path):
     
     # Plot RMSE
     plt.subplot(1, 3, 2)
-    plt.plot(history_df['rmse'], label='RMSE Global', linewidth=2)
+    plt.plot(history_df['rmse'], label='RMSE Global', linewidth=2, color='#e74c3c')  # Red
     plt.title('Erro Quadrático Médio', fontsize=12, pad=10)
     plt.xlabel('Round', fontsize=10)
     plt.ylabel('RMSE', fontsize=10)
@@ -276,10 +276,11 @@ def process_experiment(experiment_path: Path, output_path: Path):
     stds = [aggregated_metrics[r]['std_correlation'] for r in rounds]
     
     plt.errorbar(rounds, means, yerr=stds, fmt='-o', capsize=5,
-                label='Correlação Média entre Clientes', linewidth=2)
+                label='Correlação Média entre Clientes', linewidth=2, color='#3498db')  # Blue
     plt.title('Correlação de Pearson', fontsize=12, pad=10)
     plt.xlabel('Round', fontsize=10)
     plt.ylabel('Correlação', fontsize=10)
+    plt.ylim(-1, 1)  # Set y-axis limits to -1,1 for Pearson correlation
     plt.legend(fontsize=9)
     plt.grid(True, alpha=0.3)
     
