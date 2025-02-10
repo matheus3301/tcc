@@ -345,6 +345,7 @@ def main():
         num_clients=NUM_CLIENTS,
         config=fl.server.ServerConfig(num_rounds=NUM_ROUNDS),
         strategy=strategy,
+        client_resources={"num_cpus": 1, "num_gpus": 0.1}  # Allocate 1 CPU and 0.1 GPU per client
     )
 
 if __name__ == "__main__":
