@@ -4,7 +4,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import flwr as fl
 from typing import List, Tuple, Dict, Optional
-from flwr.common import Metrics
+from flwr.common import Metrics, Parameters, FitRes
+from flwr.server.client_proxy import ClientProxy
 import numpy as np
 from datetime import datetime
 import pandas as pd
@@ -17,9 +18,10 @@ from helpers.numpy_serializer import NumpyEncoder
 import psutil
 import time
 import humanize
+from sklearn.cluster import KMeans
 
 # Create base results directory if it doesn't exist
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedper+interpolation")
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedavg+clusterization")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Create timestamped directory for this run
@@ -28,17 +30,14 @@ RUN_DIR = os.path.join(RESULTS_DIR, TIMESTAMP)
 os.makedirs(RUN_DIR, exist_ok=True)
 
 # Configuration
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 LEARNING_RATE = 0.001
-EPOCHS = 10  # Local epochs per round
-N_NEURONS = 128
-NUM_ROUNDS = 50
-NUM_CLIENTS = 10
+EPOCHS = 15
+N_NEURONS = 64 
+NUM_ROUNDS = 30
+NUM_CLIENTS = 5
+N_CLUSTERS = 2
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
-
-# Values closer to 1.0 will give more weight to the local model
-# Values closer to 0.0 will give more weight to the federated model
-INTERPOLATION_WEIGHT = 0.8
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     """Aggregates metrics weighted by number of samples."""
@@ -55,10 +54,9 @@ def get_gpu_memory():
     except:
         return "GPU memory info not available"
 
-class BiLSTMClientFedPer(fl.client.NumPyClient):
+class BiLSTMClient(fl.client.NumPyClient):
     def __init__(self, client_id):
         self.client_id = client_id
-        self.interpolation_weight = INTERPOLATION_WEIGHT
         
         # Create client-specific directories
         self.client_dir = os.path.join(RUN_DIR, f'client_{self.client_id}')
@@ -85,52 +83,22 @@ class BiLSTMClientFedPer(fl.client.NumPyClient):
         self.x_val = self.x_val.reshape(self.x_val.shape[0], self.x_val.shape[1], 1)
         self.x_test = self.x_test.reshape(self.x_test.shape[0], self.x_test.shape[1], 1)
         
-        # Create regularizer
+        # Create model
         regularizer = L1L2(l1=0.0001, l2=0.0001)
-        
-        # Create federated model
-        self.federated_model = BiLSTM(
+        self.model = BiLSTM(
             input_shape=(self.x_train.shape[1], 1),
             n_neurons=N_NEURONS,
             regularizer=regularizer,
             learning_rate=LEARNING_RATE,
         )
-        self.federated_model.compile()
-        
-        # Create local model
-        self.local_model = BiLSTM(
-            input_shape=(self.x_train.shape[1], 1),
-            n_neurons=N_NEURONS,
-            regularizer=regularizer,
-            learning_rate=LEARNING_RATE,
-        )
-        self.local_model.compile()
+        self.model.compile()
 
     def get_parameters(self, config):
-        # Get all model weights from federated model
-        weights = self.federated_model.get_model().get_weights()
-        # Return only BiLSTM layers (excluding the Dense layer)
-        return weights[:-2]  # Last 2 weights are Dense layer's weights and biases
+        weights = self.model.get_model().get_weights()
+        return [np.array(w) for w in weights]
 
     def set_parameters(self, parameters):
-        # Get current federated model weights
-        current_weights = self.federated_model.get_model().get_weights()
-        # Keep the Dense layer weights (personalized)
-        personalized_weights = current_weights[-2:]  # Dense layer's weights and biases
-        # Combine shared parameters with personalized weights
-        new_weights = parameters + personalized_weights
-        # Set the combined weights
-        self.federated_model.get_model().set_weights(new_weights)
-
-    def interpolate_predictions(self, x_data):
-        """Combine predictions from local and federated models using interpolation."""
-        local_pred = self.local_model.get_model().predict(x_data, batch_size=x_data.shape[0])
-        federated_pred = self.federated_model.get_model().predict(x_data, batch_size=x_data.shape[0])
-        # Ensure predictions have the same shape as target data by squeezing the last dimension
-        local_pred = np.squeeze(local_pred, axis=-1)
-        federated_pred = np.squeeze(federated_pred, axis=-1)
-        return (self.interpolation_weight * local_pred + 
-                (1 - self.interpolation_weight) * federated_pred)
+        self.model.get_model().set_weights(parameters)
 
     def fit(self, parameters, config):
         self.set_parameters(parameters)
@@ -139,18 +107,7 @@ class BiLSTMClientFedPer(fl.client.NumPyClient):
         start_time = time.time()
         start_memory = self.process.memory_info().rss
         
-        # Train federated model
-        fed_history = self.federated_model.get_model().fit(
-            self.x_train,
-            self.y_train,
-            epochs=EPOCHS,
-            batch_size=BATCH_SIZE,
-            validation_data=(self.x_val, self.y_val),
-            verbose=0
-        )
-        
-        # Train local model independently
-        local_history = self.local_model.get_model().fit(
+        history = self.model.get_model().fit(
             self.x_train,
             self.y_train,
             epochs=EPOCHS,
@@ -167,12 +124,6 @@ class BiLSTMClientFedPer(fl.client.NumPyClient):
         # Get current round from config
         current_round = config.get("current_round", 0)
         
-        # Calculate interpolated predictions
-        interpolated_train_rmse = float(fed_history.history['loss'][-1]) * self.interpolation_weight + float(local_history.history['loss'][-1]) * (1 - self.interpolation_weight)
-        interpolated_train_loss = float(fed_history.history['loss'][-1]) * self.interpolation_weight + float(local_history.history['loss'][-1]) * (1 - self.interpolation_weight)
-        interpolated_val_rmse = float(fed_history.history['val_loss'][-1]) * self.interpolation_weight + float(local_history.history['val_loss'][-1]) * (1 - self.interpolation_weight)
-        interpolated_val_loss = float(fed_history.history['val_loss'][-1]) * self.interpolation_weight + float(local_history.history['val_loss'][-1]) * (1 - self.interpolation_weight)
-
         # Store metrics for this round
         round_metrics = {
             "round": current_round,
@@ -182,36 +133,29 @@ class BiLSTMClientFedPer(fl.client.NumPyClient):
             "memory_increase_bytes": memory_increase,
             "memory_increase_formatted": humanize.naturalsize(memory_increase),
             "gpu_memory_info": str(get_gpu_memory()),
-            "fed_train_loss": float(fed_history.history['loss'][-1]),
-            "fed_val_loss": float(fed_history.history['val_loss'][-1]),
-            "fed_train_rmse": float(fed_history.history['rmse'][-1]),
-            "fed_val_rmse": float(fed_history.history['val_rmse'][-1]),
-            "local_train_loss": float(local_history.history['loss'][-1]),
-            "local_val_loss": float(local_history.history['val_loss'][-1]),
-            "local_train_rmse": float(local_history.history['rmse'][-1]),
-            "local_val_rmse": float(local_history.history['val_rmse'][-1]),
-            "interpolated_train_rmse": float(interpolated_train_rmse),
-            "interpolated_train_loss": float(interpolated_train_loss),
-            "interpolated_val_rmse": float(interpolated_val_rmse),
-            "interpolated_val_loss": float(interpolated_val_loss)
+            "train_loss": float(history.history['loss'][-1]),
+            "val_loss": float(history.history['val_loss'][-1]),
+            "train_rmse": float(history.history['rmse'][-1]),
+            "val_rmse": float(history.history['val_rmse'][-1])
         }
         
         self.metrics_history.append(round_metrics)
         self.training_times.append(training_time)
         
         # Save metrics to CSV
-        metrics_file = os.path.join(self.client_dir, 'metrics_history.csv')
-        if os.path.exists(metrics_file):
-            pd.DataFrame([self.metrics_history[-1]]).to_csv(metrics_file, mode='a', header=False, index=False)
-        else:
-            pd.DataFrame(self.metrics_history).to_csv(metrics_file, index=False)
+        pd.DataFrame(self.metrics_history).to_csv(
+            os.path.join(self.client_dir, 'metrics_history.csv'),
+            index=False,
+            mode='a',
+            header=not os.path.exists(os.path.join(self.client_dir, 'metrics_history.csv'))
+        )
         
         # Every 10 rounds, save sample predictions
         if current_round % 10 == 0 or current_round == NUM_ROUNDS:
             # Use test data for predictions
             input_data = self.x_test
             expected_output = self.y_test
-            generated_output = self.interpolate_predictions(input_data)
+            generated_output = self.model.get_model().predict(input_data, batch_size=input_data.shape[0])
             
             # Save sample predictions
             with open(os.path.join(self.client_sample_dir, f'input_round_{current_round}.json'), 'w') as f:
@@ -228,29 +172,180 @@ class BiLSTMClientFedPer(fl.client.NumPyClient):
     def evaluate(self, parameters, config):
         self.set_parameters(parameters)
         
-        # Make predictions using interpolated model
-        predictions = self.interpolate_predictions(self.x_test)
+        loss, rmse = self.model.get_model().evaluate(
+            self.x_test,
+            self.y_test,
+            batch_size=BATCH_SIZE,
+            verbose=0
+        )
         
-        # Calculate RMSE manually since we're using interpolated predictions
-        mse = np.mean(np.square(predictions - self.y_test))
-        rmse = np.sqrt(mse)
+        return loss, len(self.x_test), {"rmse": rmse}
+
+class ClusteringFedAvg(fl.server.strategy.FedAvg):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cluster_history = []
+
+    def _parameters_to_ndarrays(self, parameters: Parameters) -> List[np.ndarray]:
+        """Convert Parameters to a list of NumPy arrays."""
+        return [
+            np.frombuffer(param, dtype=np.float32).copy()
+            for param in parameters.tensors
+        ]
+
+    def _ndarrays_to_parameters(self, ndarrays: List[np.ndarray]) -> Parameters:
+        """Convert a list of NumPy arrays to Parameters."""
+        tensors = [
+            ndarray.astype(np.float32).tobytes()
+            for ndarray in ndarrays
+        ]
+        return Parameters(tensors=tensors, tensor_type="numpy.ndarray")
+
+    def _flatten_weights(self, weights: List[np.ndarray]) -> np.ndarray:
+        """Flatten a list of NumPy arrays into a single 1D array."""
+        return np.concatenate([w.flatten() for w in weights])
+
+    def _unflatten_weights(self, flattened: np.ndarray, shapes: List[tuple]) -> List[np.ndarray]:
+        """Restore a flattened array back to its original shapes."""
+        result = []
+        idx = 0
+        for shape in shapes:
+            size = np.prod(shape)
+            result.append(flattened[idx:idx + size].reshape(shape))
+            idx += size
+        return result
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: List[Tuple[ClientProxy, FitRes]],
+        failures: List[BaseException],
+    ) -> Tuple[Optional[Parameters], Dict[str, float]]:
+        """Aggregate model weights using KMeans clustering."""
+        if not results:
+            return None, {}
         
-        # Also calculate individual RMSEs for local and federated models for comparison
-        local_pred = np.squeeze(self.local_model.get_model().predict(self.x_test, batch_size=self.x_test.shape[0]), axis=-1)
-        federated_pred = np.squeeze(self.federated_model.get_model().predict(self.x_test, batch_size=self.x_test.shape[0]), axis=-1)
+        # Convert Parameters to NumPy arrays and extract weights and num_examples
+        weights_results = []
+        metrics_list = []
+        for _, fit_res in results:
+            try:
+                weights = self._parameters_to_ndarrays(fit_res.parameters)
+                weights_results.append((weights, fit_res.num_examples))
+                metrics_list.append((fit_res.num_examples, fit_res.metrics))
+            except Exception as e:
+                print(f"Error converting parameters for a client: {str(e)}")
+                continue
+
+        if not weights_results:
+            return None, {}
+
+        # Get shapes from the first client's weights for later unflattening
+        original_shapes = [w.shape for w in weights_results[0][0]]
+
+        # Prepare data for clustering by flattening weights
+        try:
+            X = np.array([self._flatten_weights(w) for w, _ in weights_results])
+            
+            # Normalize the weights to prevent clustering issues
+            X_mean = np.mean(X, axis=0)
+            X_std = np.std(X, axis=0)
+            X_std[X_std == 0] = 1  # Prevent division by zero
+            X_normalized = (X - X_mean) / X_std
+            
+            # Remove any NaN values that might have been created
+            X_normalized = np.nan_to_num(X_normalized)
+        except Exception as e:
+            print(f"Error flattening weights for clustering: {str(e)}")
+            return None, {}
         
-        local_rmse = np.sqrt(np.mean(np.square(local_pred - self.y_test)))
-        federated_rmse = np.sqrt(np.mean(np.square(federated_pred - self.y_test)))
-        
-        return mse, len(self.x_test), {
-            "rmse": rmse,
-            "local_rmse": local_rmse,
-            "federated_rmse": federated_rmse
+        # Perform KMeans clustering
+        kmeans = KMeans(n_clusters=min(N_CLUSTERS, len(X)), random_state=42)
+        cluster_labels = kmeans.fit_predict(X_normalized)
+
+        # Save clustering information
+        cluster_info = {
+            "round": server_round,
+            "cluster_labels": cluster_labels.tolist(),
+            "n_clients_per_cluster": np.bincount(cluster_labels).tolist(),
+            "weights_stats": {
+                "original_mean": float(np.mean(X)),
+                "original_std": float(np.std(X)),
+                "normalized_mean": float(np.mean(X_normalized)),
+                "normalized_std": float(np.std(X_normalized))
+            }
         }
+        self.cluster_history.append(cluster_info)
+
+        # Print diagnostic information
+        print(f"\nRound {server_round} clustering stats:")
+        print(f"Number of clients per cluster: {np.bincount(cluster_labels).tolist()}")
+        print(f"Original weights stats - Mean: {np.mean(X):.2e}, Std: {np.std(X):.2e}")
+        print(f"Normalized weights stats - Mean: {np.mean(X_normalized):.2e}, Std: {np.std(X_normalized):.2e}\n")
+
+        # Save cluster history
+        with open(os.path.join(RUN_DIR, 'cluster_history.json'), 'w') as f:
+            json.dump(self.cluster_history, f)
+
+        # Aggregate within clusters
+        cluster_weights = []
+        cluster_importances = []
+
+        for i in range(kmeans.n_clusters):
+            # Get indices of clients in this cluster
+            cluster_indices = np.where(cluster_labels == i)[0]
+            
+            if len(cluster_indices) > 0:
+                # Extract weights and num_examples for this cluster
+                cluster_weights_results = [weights_results[idx] for idx in cluster_indices]
+                
+                try:
+                    # Weighted average within cluster using float64 for higher precision
+                    weights_sum = np.sum(
+                        [self._flatten_weights(w).astype(np.float64) * float(n) for w, n in cluster_weights_results],
+                        axis=0
+                    )
+                    examples_sum = sum(n for _, n in cluster_weights_results)
+                    
+                    cluster_weights.append(weights_sum / examples_sum)
+                    cluster_importances.append(examples_sum)
+                except Exception as e:
+                    print(f"Error aggregating weights for cluster {i}: {str(e)}")
+                    continue
+
+        if not cluster_weights:
+            return None, {}
+
+        try:
+            # Final aggregation across clusters (weighted by cluster sizes)
+            total_examples = sum(cluster_importances)
+            aggregated_weights = np.sum(
+                [w * (n / total_examples) for w, n in zip(cluster_weights, cluster_importances)],
+                axis=0
+            )
+
+            # Unflatten weights back to original shapes
+            final_weights = self._unflatten_weights(aggregated_weights, original_shapes)
+
+            # Convert back to Parameters
+            parameters_aggregated = self._ndarrays_to_parameters(final_weights)
+            
+            # Aggregate metrics
+            metrics_aggregated = {}
+            if metrics_list:
+                metrics_aggregated = weighted_average(metrics_list)
+            
+            # Clear memory
+            gc.collect()
+            
+            return parameters_aggregated, metrics_aggregated
+        except Exception as e:
+            print(f"Error in final aggregation: {str(e)}")
+            return None, {}
 
 def client_fn(cid: str) -> fl.client.Client:
     """Creates a Flower client representing a single organization."""
-    return BiLSTMClientFedPer(client_id=int(cid))
+    return BiLSTMClient(client_id=int(cid))
 
 def get_evaluate_fn():
     """Returns an evaluation function for server-side evaluation."""
@@ -288,13 +383,7 @@ def get_evaluate_fn():
         start_time = time.time()
         start_memory = process.memory_info().rss
         
-        # For server-side evaluation in FedPer, we'll use the shared BiLSTM layers
-        # but initialize a random Dense layer since it's personalized per client
-        current_weights = model.get_model().get_weights()
-        personalized_weights = current_weights[-2:]  # Keep current Dense layer
-        new_weights = parameters + personalized_weights
-        model.get_model().set_weights(new_weights)
-        
+        model.get_model().set_weights(parameters)  # Update model with the latest parameters
         loss, rmse = model.get_model().evaluate(x_test, y_test, batch_size=BATCH_SIZE, verbose=0)
         
         # Calculate metrics
@@ -328,7 +417,7 @@ def get_evaluate_fn():
 
 def main():
     # Create strategy with custom configuration
-    strategy = fl.server.strategy.FedAvg(
+    strategy = ClusteringFedAvg(
         fraction_fit=1.0,
         fraction_evaluate=1.0,
         min_fit_clients=NUM_CLIENTS,
@@ -336,7 +425,7 @@ def main():
         min_available_clients=NUM_CLIENTS,
         evaluate_metrics_aggregation_fn=weighted_average,
         evaluate_fn=get_evaluate_fn(),
-        on_fit_config_fn=lambda server_round: {"current_round": server_round}  # Pass current round to clients
+        on_fit_config_fn=lambda server_round: {"current_round": server_round}
     )
 
     # Start simulation
@@ -345,7 +434,6 @@ def main():
         num_clients=NUM_CLIENTS,
         config=fl.server.ServerConfig(num_rounds=NUM_ROUNDS),
         strategy=strategy,
-        client_resources={"num_cpus": 1, "num_gpus": 0.85}  # Allocate 1 CPU and 0.85 GPU per client
     )
 
 if __name__ == "__main__":
