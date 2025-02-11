@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 
-from flwr_fedavg.task import load_data, load_model
+from flwr_clusterization.task import load_data, load_model
 import json
 
 class NumpyEncoder(json.JSONEncoder):
@@ -33,7 +33,7 @@ class FlowerClient(NumPyClient):
         
         # Create results directory with timestamp
         self.results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 
-                                      "results", "flwr", "fedavg", "tmp")
+                                      "results", "flwr", "clusterization", "tmp")
 
         # if os.path.exists(self.results_dir):
         #     import shutil
