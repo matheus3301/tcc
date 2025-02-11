@@ -435,6 +435,7 @@ def get_evaluate_fn():
     
     # Create model
     regularizer = L1L2(l1=0.0001, l2=0.0001)
+    print("!!ATENÇÃO: x_test.shape[1]", x_test.shape[1])
     model = BiLSTM(
         input_shape=(x_test.shape[1], 1),
         n_neurons=N_NEURONS,

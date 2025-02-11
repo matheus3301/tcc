@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flwr-fedavg"
+version = "1.0.0"
+description = ""
+license = "Apache-2.0"
+dependencies = [
+    "flwr[simulation]>=1.15.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.flwr.app]
+publisher = "matheus3301"
+
+[tool.flwr.app.components]
+serverapp = "flwr_fedavg.server_app:app"
+clientapp = "flwr_fedavg.client_app:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 3
+local-epochs = 1
+batch-size = 64
+verbose = false
+
+[tool.flwr.federations]
+default = "local-simulation"
+
+[tool.flwr.federations.local-simulation]
+options.num-supernodes = 5 # Number of clients
+options.backend.client-resources.num-cpus = 1 # Each ClientApp will get assigned 1 CPU core
+options.backend.client-resources.num-gpus = 0.2 # Each ClientApp will get 50% of each available GPU
+options.backend.init_args.num_cpus = 1 # Only expose 1 CPU to the simulation
+options.backend.init_args.num_gpus = 1 # Expose a single GPU to the simulation

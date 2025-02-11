@@ -36,7 +36,7 @@ LEARNING_RATE = 0.001
 EPOCHS = 1  # Local epochs per round
 N_NEURONS = 128
 NUM_ROUNDS = 100
-NUM_CLIENTS = 10
+NUM_CLIENTS = 2
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -85,6 +85,7 @@ class BiLSTMClient(fl.client.NumPyClient):
         
         # Create model
         regularizer = L1L2(l1=0.0001, l2=0.0001)
+        print("!!ATENÇÃO: x_test.shape[1]", self.x_test.shape[1])
         self.model = BiLSTM(
             input_shape=(self.x_train.shape[1], 1),
             n_neurons=N_NEURONS,
