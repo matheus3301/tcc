@@ -30,13 +30,13 @@ RUN_DIR = os.path.join(RESULTS_DIR, TIMESTAMP)
 os.makedirs(RUN_DIR, exist_ok=True)
 
 # Configuration
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 15
-N_NEURONS = 64 
-NUM_ROUNDS = 30
-NUM_CLIENTS = 5
-N_CLUSTERS = 2
+EPOCHS = 10
+N_NEURONS = 128 
+NUM_ROUNDS = 50
+NUM_CLIENTS = 10
+N_CLUSTERS = 3
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
