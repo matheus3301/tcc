@@ -32,7 +32,7 @@ default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
 options.num-supernodes = 10 # Number of clients
-options.backend.client-resources.num-cpus = 1 # Each ClientApp will get assigned 1 CPU core
+options.backend.client-resources.num-cpus = 10 # Each ClientApp will get assigned 1 CPU core
 options.backend.client-resources.num-gpus = 0.2 # Each ClientApp will get 50% of each available GPU
-options.backend.init_args.num_cpus = 1 # Only expose 1 CPU to the simulation
+options.backend.init_args.num_cpus = 10 # Only expose 1 CPU to the simulation
 options.backend.init_args.num_gpus = 1 # Expose a single GPU to the simulation
