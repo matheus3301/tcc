@@ -22,7 +22,7 @@ serverapp = "flwr_fedavg.server_app:app"
 clientapp = "flwr_fedavg.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 3
+num-server-rounds = 250
 local-epochs = 1
 batch-size = 64
 verbose = false
