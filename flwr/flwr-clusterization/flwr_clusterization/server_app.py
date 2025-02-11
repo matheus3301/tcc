@@ -22,7 +22,7 @@ def server_fn(context: Context):
         initial_parameters=parameters,
         on_fit_config_fn=fit_config,
         on_evaluate_config_fn=evaluate_config,
-        num_clusters=2,
+        num_clusters=3,
     )
     config = ServerConfig(num_rounds=num_rounds)
 
