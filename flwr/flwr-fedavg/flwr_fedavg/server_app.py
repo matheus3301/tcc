@@ -20,10 +20,22 @@ def server_fn(context: Context):
         fraction_evaluate=1.0,
         min_available_clients=2,
         initial_parameters=parameters,
+        on_fit_config_fn=fit_config,
+        on_evaluate_config_fn=evaluate_config,
     )
     config = ServerConfig(num_rounds=num_rounds)
 
     return ServerAppComponents(strategy=strategy, config=config)
+
+def fit_config(server_round: int):
+    return {
+        "current_round": server_round,
+    }
+
+def evaluate_config(server_round: int): 
+    return {
+        "current_round": server_round,
+    }
 
 # Create ServerApp
 app = ServerApp(server_fn=server_fn)

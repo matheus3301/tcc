@@ -77,7 +77,7 @@ def load_data(partition_id):
     x_val = x_val.reshape(x_val.shape[0], x_val.shape[1], 1)
     x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], 1)
 
-    return x_train, y_train, x_test, y_test
+    return x_train, y_train, x_val, y_val, x_test, y_test
 
 
     # Download and partition dataset
