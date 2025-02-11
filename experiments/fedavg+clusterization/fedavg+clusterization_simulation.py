@@ -19,6 +19,7 @@ import psutil
 import time
 import humanize
 from sklearn.cluster import KMeans
+import gc
 
 # Create base results directory if it doesn't exist
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "results", "fedavg+clusterization")
@@ -236,6 +237,15 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.cluster_history = []
+        self.initial_parameters = None
+
+    def initialize_parameters(self, client_fn, num_clients: int):
+        """Initialize global model parameters."""
+        print("\nInitializing global model parameters...")
+        # Create a temporary client to get the initial parameters
+        client = client_fn('0')
+        self.initial_parameters = client.get_parameters({})
+        return self.initial_parameters
 
     def _parameters_to_ndarrays(self, parameters: Parameters) -> List[np.ndarray]:
         """Convert Parameters to a list of NumPy arrays."""
@@ -276,19 +286,23 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
         if not results:
             return None, {}
         
+        print(f"\nAggregating parameters for round {server_round}...")
+        
         # Convert Parameters to NumPy arrays and extract weights and num_examples
         weights_results = []
         metrics_list = []
-        for _, fit_res in results:
+        for client_proxy, fit_res in results:
             try:
                 weights = self._parameters_to_ndarrays(fit_res.parameters)
                 weights_results.append((weights, fit_res.num_examples))
                 metrics_list.append((fit_res.num_examples, fit_res.metrics))
+                print(f"Client {client_proxy.cid}: Processed parameters with {fit_res.num_examples} examples")
             except Exception as e:
-                print(f"Error converting parameters for a client: {str(e)}")
+                print(f"Error converting parameters for client {client_proxy.cid}: {str(e)}")
                 continue
 
         if not weights_results:
+            print("No valid weights to aggregate!")
             return None, {}
 
         # Get shapes from the first client's weights for later unflattening
@@ -306,6 +320,8 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
             
             # Remove any NaN values that might have been created
             X_normalized = np.nan_to_num(X_normalized)
+            
+            print(f"Prepared {len(X)} weight vectors for clustering")
         except Exception as e:
             print(f"Error flattening weights for clustering: {str(e)}")
             return None, {}
@@ -360,11 +376,13 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
                     
                     cluster_weights.append(weights_sum / examples_sum)
                     cluster_importances.append(examples_sum)
+                    print(f"Cluster {i}: Aggregated {len(cluster_indices)} clients with {examples_sum} examples")
                 except Exception as e:
                     print(f"Error aggregating weights for cluster {i}: {str(e)}")
                     continue
 
         if not cluster_weights:
+            print("No valid cluster weights to aggregate!")
             return None, {}
 
         try:
@@ -385,6 +403,8 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
             metrics_aggregated = {}
             if metrics_list:
                 metrics_aggregated = average(metrics_list)
+            
+            print(f"Successfully aggregated parameters across {len(cluster_weights)} clusters")
             
             # Clear memory
             gc.collect()
@@ -476,15 +496,20 @@ def main():
         min_available_clients=NUM_CLIENTS,
         evaluate_metrics_aggregation_fn=average,
         evaluate_fn=get_evaluate_fn(),
-        on_fit_config_fn=lambda server_round: {"current_round": server_round}
+        on_fit_config_fn=lambda server_round: {"current_round": server_round},
+        initial_parameters=None  # We'll set this after strategy creation
     )
 
-    # Start simulation
+    # Initialize parameters
+    initial_parameters = strategy.initialize_parameters(client_fn, NUM_CLIENTS)
+    
+    # Start simulation with initialized parameters
     fl.simulation.start_simulation(
         client_fn=client_fn,
         num_clients=NUM_CLIENTS,
         config=fl.server.ServerConfig(num_rounds=NUM_ROUNDS),
         strategy=strategy,
+        initial_parameters=initial_parameters  # Pass initial parameters here
     )
 
 if __name__ == "__main__":
