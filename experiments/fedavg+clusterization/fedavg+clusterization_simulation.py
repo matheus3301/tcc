@@ -68,6 +68,9 @@ class BiLSTMClient(fl.client.NumPyClient):
         self.metrics_history = []
         self.training_times = []
         
+        # Add parameter tracking
+        self.last_parameters = None
+        
         # Load data for this client
         data_load_start = time.time()
         (self.x_train, self.y_train), (self.x_val, self.y_val), (self.x_test, self.y_test) = load_data(
@@ -97,14 +100,44 @@ class BiLSTMClient(fl.client.NumPyClient):
         return [np.array(w) for w in weights]
 
     def set_parameters(self, parameters):
-        self.model.get_model().set_weights(parameters)
+        # Validate parameters before setting
+        if parameters is None:
+            print(f"Client {self.client_id}: Received None parameters!")
+            return False
+            
+        try:
+            # Check if parameters have actually changed
+            if self.last_parameters is not None:
+                param_change = sum(np.sum(np.abs(new - old)) for new, old in zip(parameters, self.last_parameters))
+                print(f"Client {self.client_id}: Parameter change magnitude: {param_change}")
+                
+                if param_change == 0:
+                    print(f"Client {self.client_id}: Warning - No parameter change detected!")
+            
+            self.model.get_model().set_weights(parameters)
+            self.last_parameters = parameters
+            return True
+        except Exception as e:
+            print(f"Client {self.client_id}: Error setting parameters: {str(e)}")
+            return False
 
     def fit(self, parameters, config):
-        self.set_parameters(parameters)
+        # Validate parameter setting
+        if not self.set_parameters(parameters):
+            print(f"Client {self.client_id}: Skipping training due to parameter setting failure")
+            return self.get_parameters(config), 0, {}
         
         # Track training time and memory
         start_time = time.time()
         start_memory = self.process.memory_info().rss
+        
+        # Get initial loss and metrics
+        initial_loss, initial_rmse = self.model.get_model().evaluate(
+            self.x_val,
+            self.y_val,
+            batch_size=BATCH_SIZE,
+            verbose=0
+        )
         
         history = self.model.get_model().fit(
             self.x_train,
@@ -112,6 +145,14 @@ class BiLSTMClient(fl.client.NumPyClient):
             epochs=EPOCHS,
             batch_size=BATCH_SIZE,
             validation_data=(self.x_val, self.y_val),
+            verbose=0
+        )
+        
+        # Get final loss and metrics
+        final_loss, final_rmse = self.model.get_model().evaluate(
+            self.x_val,
+            self.y_val,
+            batch_size=BATCH_SIZE,
             verbose=0
         )
         
@@ -135,8 +176,19 @@ class BiLSTMClient(fl.client.NumPyClient):
             "train_loss": float(history.history['loss'][-1]),
             "val_loss": float(history.history['val_loss'][-1]),
             "train_rmse": float(history.history['rmse'][-1]),
-            "val_rmse": float(history.history['val_rmse'][-1])
+            "val_rmse": float(history.history['val_rmse'][-1]),
+            "initial_val_loss": float(initial_loss),
+            "initial_val_rmse": float(initial_rmse),
+            "final_val_loss": float(final_loss),
+            "final_val_rmse": float(final_rmse),
+            "loss_improvement": float(initial_loss - final_loss),
+            "rmse_improvement": float(initial_rmse - final_rmse)
         }
+        
+        # Print training progress
+        print(f"\nClient {self.client_id} Round {current_round}:")
+        print(f"Initial RMSE: {initial_rmse:.4f}, Final RMSE: {final_rmse:.4f}")
+        print(f"RMSE Improvement: {initial_rmse - final_rmse:.4f}")
         
         self.metrics_history.append(round_metrics)
         self.training_times.append(training_time)
