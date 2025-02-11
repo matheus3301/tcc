@@ -33,9 +33,9 @@ os.makedirs(RUN_DIR, exist_ok=True)
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 10  # Local epochs per round
+EPOCHS = 1  # Local epochs per round
 N_NEURONS = 128
-NUM_ROUNDS = 50
+NUM_ROUNDS = 100
 NUM_CLIENTS = 10
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 

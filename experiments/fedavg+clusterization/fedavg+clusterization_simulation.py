@@ -32,18 +32,17 @@ os.makedirs(RUN_DIR, exist_ok=True)
 # Configuration
 BATCH_SIZE = 64
 LEARNING_RATE = 0.001
-EPOCHS = 10
+EPOCHS = 1
 N_NEURONS = 128 
-NUM_ROUNDS = 50
+NUM_ROUNDS = 100
 NUM_CLIENTS = 10
 N_CLUSTERS = 3
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "mimic2_dataset.json")
 
-def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
-    """Aggregates metrics weighted by number of samples."""
-    accuracies = [num_examples * m["rmse"] for num_examples, m in metrics]
-    examples = [num_examples for num_examples, _ in metrics]
-    return {"rmse": sum(accuracies) / sum(examples)}
+def average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
+    """Aggregates metrics using simple average."""
+    rmse_values = [m["rmse"] for _, m in metrics]
+    return {"rmse": sum(rmse_values) / len(rmse_values)}
 
 def get_gpu_memory():
     try:
@@ -333,7 +332,7 @@ class ClusteringFedAvg(fl.server.strategy.FedAvg):
             # Aggregate metrics
             metrics_aggregated = {}
             if metrics_list:
-                metrics_aggregated = weighted_average(metrics_list)
+                metrics_aggregated = average(metrics_list)
             
             # Clear memory
             gc.collect()
@@ -423,7 +422,7 @@ def main():
         min_fit_clients=NUM_CLIENTS,
         min_evaluate_clients=NUM_CLIENTS,
         min_available_clients=NUM_CLIENTS,
-        evaluate_metrics_aggregation_fn=weighted_average,
+        evaluate_metrics_aggregation_fn=average,
         evaluate_fn=get_evaluate_fn(),
         on_fit_config_fn=lambda server_round: {"current_round": server_round}
     )
