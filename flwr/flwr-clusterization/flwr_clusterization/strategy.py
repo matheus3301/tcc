@@ -29,6 +29,9 @@ from flwr.server.client_proxy import ClientProxy
 
 from sklearn.cluster import KMeans
 
+import os
+import pandas as pd
+
 def aggregate(results: list[tuple[NDArrays, int]]) -> NDArrays:
     """Compute weighted average."""
     # Calculate the total number of examples used during training
@@ -264,9 +267,11 @@ class FedKMeans(Strategy):
         # Extract client parameters and examples
         client_ndarrays = []
         client_num_examples = []
-        for _, fit_res in results:
+        client_ids = []
+        for client_proxy, fit_res in results:
             client_ndarrays.append(parameters_to_ndarrays(fit_res.parameters))
             client_num_examples.append(fit_res.num_examples)
+            client_ids.append(client_proxy.cid)
 
         # Flatten parameters for clustering
         flattened_params = [np.concatenate([p.flatten() for p in arr]) for arr in client_ndarrays]
@@ -276,10 +281,31 @@ class FedKMeans(Strategy):
         kmeans = KMeans(n_clusters=self.num_clusters, random_state=0)
         labels = kmeans.fit_predict(matrix)
 
-        # Log cluster sizes
+        # Save cluster assignments to CSV
+        results_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), 
+                                 "results", "flwr", "clusterization", "tmp")
+        os.makedirs(results_dir, exist_ok=True)
+        
+        cluster_assignments_file = os.path.join(results_dir, 'cluster_assignments.csv')
+        
+        # Create a dictionary with cluster assignments
+        cluster_data = {
+            'round': server_round,
+            'total_clients': len(client_ids)
+        }
+        
+        # Add client assignments for each cluster
         for cluster_id in range(self.num_clusters):
-            cluster_size = len(np.where(labels == cluster_id)[0])
-            log(WARNING, f"Cluster {cluster_id} has {cluster_size} clients")
+            cluster_indices = np.where(labels == cluster_id)[0]
+            cluster_clients = [client_ids[i] for i in cluster_indices]
+            cluster_data[f'cluster_{cluster_id}'] = ','.join(cluster_clients) if cluster_clients else ''
+            log(WARNING, f"Cluster {cluster_id} has {len(cluster_clients)} clients: {cluster_clients}")
+        
+        # Save to CSV
+        if os.path.exists(cluster_assignments_file):
+            pd.DataFrame([cluster_data]).to_csv(cluster_assignments_file, mode='a', header=False, index=False)
+        else:
+            pd.DataFrame([cluster_data]).to_csv(cluster_assignments_file, index=False)
 
         # Aggregate each cluster
         cluster_centroids = []
